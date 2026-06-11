@@ -2,14 +2,24 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
+from datetime import datetime, timedelta
 import io
-import math
 
 app = Flask(__name__)
 CORS(app)
 
 currency_fmt = '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)'
 pct_fmt = '0.00%'
+
+def parse_date(s):
+    if not s:
+        return datetime.now()
+    for fmt in ('%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(str(s), fmt)
+        except:
+            pass
+    return datetime.now()
 
 def set_cell(ws, coord, value, bold=False, align=None, number_format=None):
     cell = ws[coord]
@@ -27,17 +37,20 @@ def generate():
     activities = data.get('activities', [])
 
     # Sort activities by date
-    from datetime import datetime, timedelta
-    activities.sort(key=lambda x: x.get('d', '') or '')
+    activities = [a for a in activities if a.get('d')]
+    activities.sort(key=lambda x: parse_date(x.get('d')))
 
     # Billing month setup
     if activities:
-        first_date = datetime.strptime(activities[0]['d'], '%m/%d/%Y')
+        first_date = parse_date(activities[0]['d'])
     else:
-        first_date = datetime.strptime(loan.get('fd', '01/01/2026'), '%m/%d/%Y')
+        first_date = parse_date(loan.get('fd', '01/01/2026'))
 
     billing_month_start = first_date.replace(day=1)
-    next_month = billing_month_start.replace(month=billing_month_start.month % 12 + 1) if billing_month_start.month < 12 else billing_month_start.replace(year=billing_month_start.year + 1, month=1)
+    if billing_month_start.month == 12:
+        next_month = billing_month_start.replace(year=billing_month_start.year + 1, month=1)
+    else:
+        next_month = billing_month_start.replace(month=billing_month_start.month + 1)
     billing_month_end = next_month - timedelta(days=1)
     statement_date = next_month
 
@@ -50,14 +63,14 @@ def generate():
     int_reserve = float(loan.get('ir') or 0)
 
     for act in activities:
-        if not act.get('d'):
-            continue
-        act_date = datetime.strptime(act['d'], '%m/%d/%Y')
+        act_date = parse_date(act['d'])
         days = (act_date - segment_start).days
         if days > 0:
             interest = round(running_balance * current_rate / 360 * days, 2)
             total_interest += interest
-            trans_amt = float(act.get('dis') or 0) or (min(float(act.get('ip') or 0), int_reserve) if act.get('ip') else 0)
+            dis = float(act.get('dis') or 0)
+            ip = float(act.get('ip') or 0)
+            trans_amt = dis if dis else (min(ip, int_reserve) if ip else 0)
             rows.append({
                 'memo': act.get('t', 'Bal Fwd'),
                 'type': '',
@@ -75,14 +88,27 @@ def generate():
             applied = min(float(act['ip']), int_reserve)
             int_reserve -= applied
             if applied > 0: running_balance += applied
-        if act.get('pr'): current_rate = float(act['pr']) + float(loan.get('spread') or 0)
+        if act.get('pr'):
+            current_rate = float(act['pr']) + float(loan.get('spread') or 0)
         segment_start = act_date
 
-    # Final segment
+    # Final segment / Loan Balance row
     remaining_days = (billing_month_end - segment_start).days + 1
     final_interest = round(running_balance * current_rate / 360 * remaining_days, 2)
-    total_interest += final_interest
-    total_interest = round(total_interest, 2)
+    total_interest = round(total_interest + final_interest, 2)
+
+    loan_balance_row = {
+        'memo': 'Loan Balance',
+        'type': 'Bal Fwd',
+        'principal': float(loan.get('na') or loan.get('bp') or loan.get('bal') or 0),
+        'trans': 0,
+        'dates': f"{segment_start.strftime('%m/%d/%Y')} - {billing_month_end.strftime('%m/%d/%Y')}",
+        'days': remaining_days,
+        'rate': None,
+        'interest': final_interest
+    }
+
+    all_rows = rows + [loan_balance_row]
 
     # Build workbook
     wb = Workbook()
@@ -93,69 +119,46 @@ def generate():
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
 
-    # Row 1 - Title
     ws.merge_cells('A1:H1')
     set_cell(ws, 'A1', 'LOAN BILLING STATEMENT', bold=True, align='center')
 
-    # Row 2
     set_cell(ws, 'A2', loan.get('bn', ''))
     set_cell(ws, 'G2', 'As of Date:', align='right')
     set_cell(ws, 'H2', billing_month_end.strftime('%m/%d/%Y'))
 
-    # Row 4
     set_cell(ws, 'A4', '1111 North Post Oak Road')
     set_cell(ws, 'G4', 'Statement Date:', align='right')
     set_cell(ws, 'H4', statement_date.strftime('%m/%d/%Y'))
 
-    # Row 5
     set_cell(ws, 'A5', 'Houston, Texas 77055')
 
-    # Row 9
     set_cell(ws, 'A9', 'Loan Number / Unit:', align='right')
     set_cell(ws, 'B9', loan.get('ln', ''))
 
-    # Row 10
     set_cell(ws, 'A10', 'Address:', align='right')
     set_cell(ws, 'B10', loan.get('pa', ''))
 
-    # Row 13
     set_cell(ws, 'B13', 'Loan Commitment:', bold=True)
     set_cell(ws, 'C13', float(loan.get('na') or 0), bold=True, number_format=currency_fmt)
 
-    # Row 15 - Summary headers
     set_cell(ws, 'A15', 'Memo Description', bold=True)
     set_cell(ws, 'C15', 'Billing Date', bold=True)
     set_cell(ws, 'D15', 'Due Date', bold=True)
     set_cell(ws, 'E15', 'Amount Due', bold=True)
 
-    # Row 16
     set_cell(ws, 'A16', 'INTEREST BILLING - PERIOD END')
     set_cell(ws, 'C16', billing_month_end.strftime('%m/%d/%Y'), align='left')
     set_cell(ws, 'D16', statement_date.strftime('%m/%d/%Y'), align='left')
     set_cell(ws, 'E16', total_interest, bold=True, number_format=currency_fmt)
 
-    # Row 17
     set_cell(ws, 'D17', 'Total:')
     set_cell(ws, 'E17', total_interest, bold=True, number_format=currency_fmt)
 
-    # Row 20 - Detail headers
     headers = [('A','Memo Description'),('B','Type'),('C','Principal Balance'),
                ('D','Transaction Amount'),('E','From / To Date'),('F','# of Days'),
                ('G','Rate'),('H','Interest Due')]
     for col, val in headers:
         set_cell(ws, f'{col}20', val, bold=True, align='center')
-
-    # Activity rows starting row 21
-    all_rows = rows + [{
-        'memo': 'Loan Balance',
-        'type': 'Bal Fwd',
-        'principal': float(loan.get('na') or loan.get('bp') or loan.get('bal') or 0),
-        'trans': 0,
-        'dates': f"{segment_start.strftime('%m/%d/%Y')} - {billing_month_end.strftime('%m/%d/%Y')}",
-        'days': remaining_days,
-        'rate': None,
-        'interest': final_interest
-    }]
 
     for i, row in enumerate(all_rows):
         r = 21 + i
@@ -180,7 +183,6 @@ def generate():
     set_cell(ws, f'G{pay_row}', 'PLEASE PAY THIS AMOUNT:', bold=True, align='right')
     set_cell(ws, f'H{pay_row}', total_interest, bold=True, number_format=currency_fmt)
 
-    # Save to buffer
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
