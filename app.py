@@ -36,11 +36,9 @@ def generate():
     loan = data.get('loan', {})
     activities = data.get('activities', [])
 
-    # Sort activities by date
     activities = [a for a in activities if a.get('d')]
     activities.sort(key=lambda x: parse_date(x.get('d')))
 
-    # Billing month setup
     if activities:
         first_date = parse_date(activities[0]['d'])
     else:
@@ -54,7 +52,6 @@ def generate():
     billing_month_end = next_month - timedelta(days=1)
     statement_date = next_month
 
-    # Calculate segments
     rows = []
     running_balance = float(loan.get('bp') or loan.get('bal') or 0)
     current_rate = float(loan.get('rate') or 0)
@@ -92,7 +89,6 @@ def generate():
             current_rate = float(act['pr']) + float(loan.get('spread') or 0)
         segment_start = act_date
 
-    # Final segment / Loan Balance row
     remaining_days = (billing_month_end - segment_start).days + 1
     final_interest = round(running_balance * current_rate / 360 * remaining_days, 2)
     total_interest = round(total_interest + final_interest, 2)
@@ -110,12 +106,20 @@ def generate():
 
     all_rows = rows + [loan_balance_row]
 
-    # Build workbook
     wb = Workbook()
     ws = wb.active
     ws.title = 'Billing Statement'
 
-    col_widths = {'A': 26.43, 'B': 18.71, 'C': 15.86, 'D': 14.29, 'E': 21.86, 'F': 13.43, 'G': 14.57, 'H': 12.29}
+    col_widths = {
+        'A': 35,   # Memo Description
+        'B': 20,   # Type
+        'C': 18,   # Principal Balance
+        'D': 20,   # Transaction Amount
+        'E': 28,   # From / To Date
+        'F': 12,   # # of Days
+        'G': 30,   # Rate / Total Interest label
+        'H': 16    # Interest Due
+    }
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
 
