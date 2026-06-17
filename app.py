@@ -63,7 +63,7 @@ def generate():
 
     rows.append({
         'memo': 'Balance Forward',
-        'type': 'Balance Forward',
+        'type': '',
         'principal': running_balance,
         'trans': 0,
         'dates': f"{billing_month_start.strftime('%m/%d/%Y')} - {billing_month_start.strftime('%m/%d/%Y')}",
@@ -103,7 +103,7 @@ def generate():
 
         rows.append({
             'memo': activity_type,
-            'type': activity_type,
+            'type': '',
             'principal': running_balance,
             'trans': trans_amt,
             'dates': f"{segment_start.strftime('%m/%d/%Y')} - {act_date.strftime('%m/%d/%Y')}",
