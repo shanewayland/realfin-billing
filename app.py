@@ -172,7 +172,7 @@ def generate():
     set_cell(ws, 'D17', 'Total:')
     set_cell(ws, 'E17', total_interest, bold=True, number_format=currency_fmt)
 
-    headers = [('A','Memo Description'),('B','Type'),('C','Principal Balance'),
+    headers = [('A','Memo Description'),('C','Principal Balance'),
                ('D','Transaction Amount'),('E','From / To Date'),('F','# of Days'),
                ('G','Rate'),('H','Interest Due')]
     for col, val in headers:
