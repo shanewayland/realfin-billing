@@ -36,7 +36,7 @@ def generate():
     loan = data.get('loan', {})
     activities = data.get('activities', [])
 
-    activities = [a for a in activities if a.get('d')]
+    activities = [a for a in activities if a.get('d') and a.get('t') not in ('EDPC', 'Notes')]
     activities.sort(key=lambda x: parse_date(x.get('d')))
 
     if activities:
@@ -52,73 +52,87 @@ def generate():
     billing_month_end = next_month - timedelta(days=1)
     statement_date = next_month
 
-    rows = []
     running_balance = float(loan.get('bp') or loan.get('bal') or 0)
     current_rate = float(loan.get('rate') or 0)
-    segment_start = billing_month_start
+    loan_spread = float(loan.get('spread') or 0)
+    floor_rate = float(loan.get('floor') or 0)
+
+    rows = []
     total_interest = 0
-    int_reserve = float(loan.get('ir') or 0)
+    segment_start = billing_month_start
+
+    rows.append({
+        'memo': 'Balance Forward',
+        'type': 'Balance Forward',
+        'principal': running_balance,
+        'trans': 0,
+        'dates': f"{billing_month_start.strftime('%m/%d/%Y')} - {billing_month_start.strftime('%m/%d/%Y')}",
+        'days': 0,
+        'rate': current_rate if current_rate else None,
+        'interest': 0
+    })
 
     for act in activities:
         act_date = parse_date(act['d'])
-        days = (act_date - segment_start).days
-        if days > 0:
-            interest = round(running_balance * current_rate / 360 * days, 2)
-            total_interest += interest
-            dis = float(act.get('dis') or 0)
-            ip = float(act.get('ip') or 0)
-            trans_amt = dis if dis else (min(ip, int_reserve) if ip else 0)
-            rows.append({
-                'memo': act.get('t', 'Bal Fwd'),
-                'type': '',
-                'principal': running_balance,
-                'trans': trans_amt,
-                'dates': f"{segment_start.strftime('%m/%d/%Y')} - {act_date.strftime('%m/%d/%Y')}",
-                'days': days,
-                'rate': current_rate,
-                'interest': interest
-            })
+        days = (act_date - segment_start).days + 1
 
-        if act.get('dis'): running_balance += float(act['dis'])
-        if act.get('pp'): running_balance -= float(act['pp'])
-        if act.get('ip'):
-            applied = min(float(act['ip']), int_reserve)
-            int_reserve -= applied
-            if applied > 0: running_balance += applied
-        if act.get('pr'):
-            current_rate = float(act['pr']) + float(loan.get('spread') or 0)
-        segment_start = act_date
+        activity_type = act.get('t', '')
+        trans_amt = 0
 
-    remaining_days = (billing_month_end - segment_start).days + 1
-    final_interest = round(running_balance * current_rate / 360 * remaining_days, 2)
-    total_interest = round(total_interest + final_interest, 2)
+        dis = float(act.get('dis') or 0)
+        pp = float(act.get('pp') or 0)
+        ip = float(act.get('ip') or 0)
+        pr = act.get('pr')
 
-    loan_balance_row = {
-        'memo': 'Loan Balance',
-        'type': 'Bal Fwd',
-        'principal': float(loan.get('na') or loan.get('bp') or loan.get('bal') or 0),
-        'trans': 0,
-        'dates': f"{segment_start.strftime('%m/%d/%Y')} - {billing_month_end.strftime('%m/%d/%Y')}",
-        'days': remaining_days,
-        'rate': None,
-        'interest': final_interest
-    }
+        if dis:
+            running_balance += dis
+            trans_amt = dis
+        if pp:
+            running_balance -= pp
+            trans_amt = pp
+        if ip:
+            running_balance += ip
+            trans_amt = ip
+        if pr is not None and pr != '':
+            new_prime = float(pr)
+            current_rate = max(loan_spread + new_prime, floor_rate)
+            trans_amt = 0
 
-    all_rows = rows + [loan_balance_row]
+        interest = round(running_balance * current_rate / 360 * days, 2) if days > 0 else 0
+        total_interest += interest
+
+        rows.append({
+            'memo': activity_type,
+            'type': activity_type,
+            'principal': running_balance,
+            'trans': trans_amt,
+            'dates': f"{segment_start.strftime('%m/%d/%Y')} - {act_date.strftime('%m/%d/%Y')}",
+            'days': days,
+            'rate': current_rate,
+            'interest': interest
+        })
+
+        segment_start = act_date + timedelta(days=1)
+
+    if activities:
+        last_act_date = parse_date(activities[-1]['d'])
+        final_days = (billing_month_end - last_act_date).days
+        if final_days > 0:
+            last_row = rows[-1]
+            last_row['dates'] = f"{last_act_date.strftime('%m/%d/%Y')} - {billing_month_end.strftime('%m/%d/%Y')}"
+            last_row['days'] = final_days + 1
+            last_row['interest'] = round(running_balance * current_rate / 360 * last_row['days'], 2)
+            total_interest = round(sum(r['interest'] for r in rows[:-1]) + last_row['interest'], 2)
+
+    total_interest = round(total_interest, 2)
+    all_rows = rows
 
     wb = Workbook()
     ws = wb.active
     ws.title = 'Billing Statement'
 
     col_widths = {
-        'A': 35,   # Memo Description
-        'B': 20,   # Type
-        'C': 18,   # Principal Balance
-        'D': 20,   # Transaction Amount
-        'E': 28,   # From / To Date
-        'F': 12,   # # of Days
-        'G': 30,   # Rate / Total Interest label
-        'H': 16    # Interest Due
+        'A': 35, 'B': 20, 'C': 18, 'D': 20, 'E': 28, 'F': 12, 'G': 30, 'H': 16
     }
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
@@ -178,8 +192,8 @@ def generate():
 
     total_row = 21 + len(all_rows)
     set_cell(ws, f'B{total_row}', 'Total:', bold=True, align='right')
-    set_cell(ws, f'C{total_row}', float(loan.get('na') or 0), bold=True, number_format=currency_fmt)
-    set_cell(ws, f'D{total_row}', 0, bold=True, number_format=currency_fmt)
+    set_cell(ws, f'C{total_row}', running_balance, bold=True, number_format=currency_fmt)
+    set_cell(ws, f'D{total_row}', sum(r['trans'] for r in all_rows), bold=True, number_format=currency_fmt)
     set_cell(ws, f'G{total_row}', 'Total Interest for the Month:', bold=True, align='right')
     set_cell(ws, f'H{total_row}', total_interest, bold=True, number_format=currency_fmt)
 
