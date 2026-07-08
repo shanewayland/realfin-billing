@@ -74,7 +74,7 @@ def generate():
 
     for act in activities:
         act_date = parse_date(act['d'])
-        days = (act_date - segment_start).days + 1
+        days = (act_date - segment_start).days
 
         activity_type = act.get('t', '')
         trans_amt = 0
@@ -112,7 +112,7 @@ def generate():
             'interest': interest
         })
 
-        segment_start = act_date + timedelta(days=1)
+        segment_start = act_date
 
     if activities:
         last_act_date = parse_date(activities[-1]['d'])
@@ -120,7 +120,7 @@ def generate():
         if final_days > 0:
             last_row = rows[-1]
             last_row['dates'] = f"{last_act_date.strftime('%m/%d/%Y')} - {billing_month_end.strftime('%m/%d/%Y')}"
-            last_row['days'] = final_days + 1
+            last_row['days'] = final_days
             last_row['interest'] = round(running_balance * current_rate / 360 * last_row['days'], 2)
             total_interest = round(sum(r['interest'] for r in rows[:-1]) + last_row['interest'], 2)
 
