@@ -44,6 +44,7 @@ def generate():
     else:
         first_date = parse_date(loan.get('fd', '01/01/2026'))
 
+    # Statement month framed by the first activity's month
     billing_month_start = first_date.replace(day=1)
     if billing_month_start.month == 12:
         next_month = billing_month_start.replace(year=billing_month_start.year + 1, month=1)
@@ -52,80 +53,89 @@ def generate():
     billing_month_end = next_month - timedelta(days=1)
     statement_date = next_month
 
+    # Accrual begins on funding date (falls back to first activity if none)
+    funding_date = parse_date(loan.get('fd')) if loan.get('fd') else first_date
+
     running_balance = float(loan.get('bp') or loan.get('bal') or 0)
     current_rate = float(loan.get('rate') or 0)
     loan_spread = float(loan.get('spread') or 0)
     floor_rate = float(loan.get('floor') or 0)
 
-    rows = []
-    total_interest = 0
-    segment_start = billing_month_start
+    # Build segment boundaries: funding date, then each activity date.
+    # Each segment carries the balance/rate IN EFFECT for that segment (post-event),
+    # and runs from its start date to the day before the next boundary (final: to month end, inclusive).
+    boundaries = []
 
-    rows.append({
+    # Opening (Balance Forward) segment at funding date with starting balance/rate
+    boundaries.append({
+        'date': funding_date,
         'memo': 'Balance Forward',
-        'type': '',
-        'principal': running_balance,
         'trans': 0,
-        'dates': f"{billing_month_start.strftime('%m/%d/%Y')} - {billing_month_start.strftime('%m/%d/%Y')}",
-        'days': 0,
-        'rate': current_rate if current_rate else None,
-        'interest': 0
+        'balance': running_balance,
+        'rate': current_rate
     })
 
+    bal = running_balance
+    rate = current_rate
     for act in activities:
         act_date = parse_date(act['d'])
-        days = (act_date - segment_start).days
-
-        activity_type = act.get('t', '')
-        trans_amt = 0
-
         dis = float(act.get('dis') or 0)
         pp = float(act.get('pp') or 0)
         ip = float(act.get('ip') or 0)
         pr = act.get('pr')
+        trans_amt = 0
 
         if dis:
-            running_balance += dis
+            bal += dis
             trans_amt = dis
         if pp:
-            running_balance -= pp
+            bal -= pp
             trans_amt = pp
         if ip:
-            running_balance += ip
+            bal += ip
             trans_amt = ip
         if pr is not None and pr != '':
             new_prime = float(pr)
-            current_rate = max(loan_spread + new_prime, floor_rate)
+            rate = max(loan_spread + new_prime, floor_rate)
             trans_amt = 0
 
-        interest = round(running_balance * current_rate / 360 * days, 2) if days > 0 else 0
+        boundaries.append({
+            'date': act_date,
+            'memo': act.get('t', ''),
+            'trans': trans_amt,
+            'balance': bal,
+            'rate': rate
+        })
+
+    rows = []
+    total_interest = 0
+    for i, seg in enumerate(boundaries):
+        start = seg['date']
+        if i < len(boundaries) - 1:
+            next_date = boundaries[i + 1]['date']
+            days = (next_date - start).days
+            to_date = next_date - timedelta(days=1)
+        else:
+            days = (billing_month_end - start).days + 1  # final segment inclusive to month end
+            to_date = billing_month_end
+
+        interest = round(seg['balance'] * seg['rate'] / 360 * days, 2) if days > 0 else 0
         total_interest += interest
 
         rows.append({
-            'memo': activity_type,
+            'memo': seg['memo'],
             'type': '',
-            'principal': running_balance,
-            'trans': trans_amt,
-            'dates': f"{segment_start.strftime('%m/%d/%Y')} - {act_date.strftime('%m/%d/%Y')}",
+            'principal': seg['balance'],
+            'trans': seg['trans'],
+            'dates': f"{start.strftime('%m/%d/%Y')} - {to_date.strftime('%m/%d/%Y')}",
             'days': days,
-            'rate': current_rate,
+            'rate': seg['rate'] if seg['rate'] else None,
             'interest': interest
         })
 
-        segment_start = act_date
-
-    if activities:
-        last_act_date = parse_date(activities[-1]['d'])
-        final_days = (billing_month_end - last_act_date).days
-        if final_days > 0:
-            last_row = rows[-1]
-            last_row['dates'] = f"{last_act_date.strftime('%m/%d/%Y')} - {billing_month_end.strftime('%m/%d/%Y')}"
-            last_row['days'] = final_days
-            last_row['interest'] = round(running_balance * current_rate / 360 * last_row['days'], 2)
-            total_interest = round(sum(r['interest'] for r in rows[:-1]) + last_row['interest'], 2)
-
     total_interest = round(total_interest, 2)
     all_rows = rows
+    running_balance = boundaries[-1]['balance']
 
     wb = Workbook()
     ws = wb.active
