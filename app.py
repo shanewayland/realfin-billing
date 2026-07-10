@@ -4,6 +4,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 from datetime import datetime, timedelta
 import io
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -12,14 +13,19 @@ currency_fmt = '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)'
 pct_fmt = '0.00%'
 
 def parse_date(s):
+    """Parse a date string. Strips any trailing time component.
+    Returns None if unparseable (caller decides fallback) — never silently returns today."""
     if not s:
-        return datetime.now()
-    for fmt in ('%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d'):
+        return None
+    s = str(s).strip()
+    # strip a trailing time like "12:00 am", "12:00 AM", "00:00:00"
+    s_date = re.split(r'\s+\d{1,2}:\d{2}', s)[0].strip()
+    for fmt in ('%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d', '%b %d, %Y', '%B %d, %Y', '%b %d %Y'):
         try:
-            return datetime.strptime(str(s), fmt)
+            return datetime.strptime(s_date, fmt)
         except:
             pass
-    return datetime.now()
+    return None
 
 def set_cell(ws, coord, value, bold=False, align=None, number_format=None):
     cell = ws[coord]
@@ -36,13 +42,16 @@ def generate():
     loan = data.get('loan', {})
     activities = data.get('activities', [])
 
-    activities = [a for a in activities if a.get('d') and a.get('t') not in ('EDPC', 'Notes')]
+    # keep only activities with a valid, parseable date
+    activities = [a for a in activities
+                  if a.get('d') and parse_date(a.get('d')) is not None
+                  and a.get('t') not in ('EDPC', 'Notes')]
     activities.sort(key=lambda x: parse_date(x.get('d')))
 
     if activities:
         first_date = parse_date(activities[0]['d'])
     else:
-        first_date = parse_date(loan.get('fd', '01/01/2026'))
+        first_date = parse_date(loan.get('fd')) or datetime.now()
 
     # Statement month framed by the first activity's month
     billing_month_start = first_date.replace(day=1)
@@ -53,20 +62,18 @@ def generate():
     billing_month_end = next_month - timedelta(days=1)
     statement_date = next_month
 
-    # Accrual begins on funding date (falls back to first activity if none)
-    funding_date = parse_date(loan.get('fd')) if loan.get('fd') else first_date
+    # Accrual begins on funding date; fall back to first activity date if funding date missing/bad
+    funding_date = parse_date(loan.get('fd')) or first_date
 
     running_balance = float(loan.get('bp') or loan.get('bal') or 0)
     current_rate = float(loan.get('rate') or 0)
     loan_spread = float(loan.get('spread') or 0)
     floor_rate = float(loan.get('floor') or 0)
 
-    # Build segment boundaries: funding date, then each activity date.
-    # Each segment carries the balance/rate IN EFFECT for that segment (post-event),
-    # and runs from its start date to the day before the next boundary (final: to month end, inclusive).
+    # Build segment boundaries: funding date (opening), then each activity date.
+    # Each segment carries the balance/rate in effect for that segment (post-event),
+    # runs from its start to the day before the next boundary (final: to month end, inclusive).
     boundaries = []
-
-    # Opening (Balance Forward) segment at funding date with starting balance/rate
     boundaries.append({
         'date': funding_date,
         'memo': 'Balance Forward',
