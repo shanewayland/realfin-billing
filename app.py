@@ -109,39 +109,31 @@ def generate():
 
     spread = float(loan.get('spread') or 0)
     floor = float(loan.get('floor') or 0)
-    bal = float(loan.get('bp') or loan.get('bal') or 0)
-    rate = float(loan.get('rate') or 0)
 
-    # ---- Group activities by date, drop anything after the period ----
+    # bp = the selected month's BEGINNING principal balance (Bubble: Month Selector's
+    # value's beginning_principal_balance). It is already the opening balance at
+    # period_start, so prior-period activity must NOT be replayed onto it.
+    o_bal = float(loan.get('bp') or loan.get('bal') or 0)
+    o_rate = float(loan.get('rate') or 0)
+
+    # ---- Keep only activity inside the statement period, grouped by date ----
     grouped = OrderedDict()
     for act in activities:
         d = parse_date(act['d'])
-        if d > period_end:
+        if d < period_start or d > period_end:
             continue
         grouped.setdefault(d, []).append(act)
 
-    # ---- Replay pre-period activity into the opening balance (no rows emitted) ----
-    events = []
-    for d in sorted(grouped.keys()):
-        memo, net, bal, rate = apply_group(grouped[d], bal, rate, spread, floor)
-        if d < period_start:
-            continue
-        events.append({'date': d, 'memo': memo or 'Activity',
-                       'trans': net, 'balance': bal, 'rate': rate})
-
-    # Opening state = balance/rate after all pre-period replay, before in-period events.
-    # Recomputed from scratch so the opening row is unambiguous.
-    o_bal = float(loan.get('bp') or loan.get('bal') or 0)
-    o_rate = float(loan.get('rate') or 0)
-    for d in sorted(grouped.keys()):
-        if d < period_start:
-            _, _, o_bal, o_rate = apply_group(grouped[d], o_bal, o_rate, spread, floor)
-
-    # ---- Boundaries: opening row clipped to the period, then in-period events ----
+    # ---- Boundaries: opening row, then one row per activity date ----
     opening_start = max(period_start, funding_date)
     boundaries = [{'date': opening_start, 'memo': 'Balance Forward',
                    'trans': 0, 'balance': o_bal, 'rate': o_rate}]
-    boundaries.extend(e for e in events if e['date'] >= opening_start)
+
+    bal, rate = o_bal, o_rate
+    for d in sorted(grouped.keys()):
+        memo, net, bal, rate = apply_group(grouped[d], bal, rate, spread, floor)
+        boundaries.append({'date': max(d, opening_start), 'memo': memo or 'Activity',
+                           'trans': net, 'balance': bal, 'rate': rate})
 
     # ---- Segment the period ----
     rows = []
