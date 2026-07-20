@@ -109,8 +109,8 @@ def build_loan(d):
     )
 
 
-def row_json(loan, r):
-    return {
+def row_json(loan, r, include_segments=False):
+    out = {
         'month_number': r.month_number,
         'month_date': r.month_date.isoformat(),
         'period_start': r.period_start.isoformat(),
@@ -128,16 +128,36 @@ def row_json(loan, r):
         'reserve_remaining': round(r.reserve_remaining, 2),
         'projected': r.projected,
         'past_maturity': r.past_maturity,
-        'segments': [{
-            'memo': s.memo,
-            'start': s.start.isoformat(),
-            'end': s.end.isoformat(),
-            'days': s.days,
-            'balance': round(s.balance, 2),
-            'transaction': round(s.trans, 2),
-            'rate': s.rate,
-            'interest': round(s.interest, 2),
-        } for s in r.segments],
+    }
+    if include_segments:
+        out['segments'] = [seg_json(s) for s in r.segments]
+    return out
+
+
+def seg_json(s):
+    """One activity line. The transaction is split across the columns the
+    monthly page already shows, so each maps 1:1 with no Bubble-side logic."""
+    memo = (s.memo or '').lower()
+    disb = pay = intp = 0.0
+    if 'disbursement' in memo:
+        disb = round(s.trans, 2)
+    elif 'paydown' in memo:
+        pay = round(abs(s.trans), 2)
+    elif 'interest' in memo:
+        intp = round(s.trans, 2)
+    return {
+        'memo': s.memo,
+        'activity_date': s.start.isoformat(),
+        'start': s.start.isoformat(),
+        'end': s.end.isoformat(),
+        'days': s.days,
+        'principal_balance': round(s.balance, 2),
+        'transaction': round(s.trans, 2),
+        'interest_payment': intp,
+        'disbursement': disb,
+        'paydown': pay,
+        'rate': s.rate,
+        'interest': round(s.interest, 2),
     }
 
 
@@ -150,13 +170,23 @@ def schedule():
         loan = build_loan(body.get('loan', body))
         months = int(num(body.get('months'), 60))
         through = parse_date(body.get('actuals_through')) or date.today()
+        segs = bool(body.get('include_segments'))
         rows = build_schedule(loan, months=months, actuals_through=through)
+
+        # Optional: narrow to one month. Bubble sends the Month Selector's date.
+        period = parse_date(body.get('period'))
+        if period:
+            rows = [r for r in rows
+                    if r.month_date.year == period.year
+                    and r.month_date.month == period.month]
+            if not rows:
+                return jsonify({'error': f'{period:%B %Y} is outside the schedule'}), 400
         return jsonify({
             'loan_number': loan.number,
             'effective_rate': loan.effective_rate(loan.initial_prime),
             'accrual_start': loan.funding_date.isoformat(),
             'months': len(rows),
-            'rows': [row_json(loan, r) for r in rows],
+            'rows': [row_json(loan, r, segs) for r in rows],
         })
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
