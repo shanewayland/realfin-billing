@@ -3,5 +3,5 @@ services:
     name: realfin-billing
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn service:app
     plan: free
