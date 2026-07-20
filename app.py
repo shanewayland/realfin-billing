@@ -49,6 +49,11 @@ def set_cell(ws, coord, value, bold=False, align=None, number_format=None):
         cell.number_format = number_format
 
 
+def txt(v):
+    """Trim stray whitespace Bubble's arbitrary-text fields introduce."""
+    return str(v).strip() if v is not None else ''
+
+
 def apply_group(acts, bal, rate, spread, floor):
     """Apply every activity that shares one date. Returns (memo, net_trans, bal, rate)."""
     memos = []
@@ -150,10 +155,17 @@ def generate():
             days = (period_end - start).days + 1
             to_date = period_end
 
-        if days <= 0 and seg['trans'] == 0:
-            continue  # opening row superseded by an event on the same date
+        if days > 0:
+            dates = f"{start.strftime('%m/%d/%Y')} - {to_date.strftime('%m/%d/%Y')}"
+            interest = round(seg['balance'] * seg['rate'] / 360 * days, 2)
+        else:
+            # Opening position on a date that also has activity: show the balance,
+            # accrue nothing. The row is kept so the Principal Balance column
+            # always starts from the month's beginning balance.
+            days = 0
+            dates = start.strftime('%m/%d/%Y')
+            interest = 0
 
-        interest = round(seg['balance'] * seg['rate'] / 360 * days, 2) if days > 0 else 0
         total_interest += interest
 
         rows.append({
@@ -161,7 +173,7 @@ def generate():
             'type': '',
             'principal': seg['balance'],
             'trans': seg['trans'],
-            'dates': f"{start.strftime('%m/%d/%Y')} - {to_date.strftime('%m/%d/%Y')}",
+            'dates': dates,
             'days': days,
             'rate': seg['rate'] if seg['rate'] else None,
             'interest': interest
@@ -182,7 +194,7 @@ def generate():
     ws.merge_cells('A1:H1')
     set_cell(ws, 'A1', 'LOAN BILLING STATEMENT', bold=True, align='center')
 
-    set_cell(ws, 'A2', loan.get('bn', ''))
+    set_cell(ws, 'A2', txt(loan.get('bn', '')))
     set_cell(ws, 'G2', 'As of Date:', align='right')
     set_cell(ws, 'H2', period_end.strftime('%m/%d/%Y'))
 
@@ -193,10 +205,10 @@ def generate():
     set_cell(ws, 'A5', 'Houston, Texas 77055')
 
     set_cell(ws, 'A9', 'Loan Number / Unit:', align='right')
-    set_cell(ws, 'B9', loan.get('ln', ''))
+    set_cell(ws, 'B9', txt(loan.get('ln', '')))
 
     set_cell(ws, 'A10', 'Address:', align='right')
-    set_cell(ws, 'B10', loan.get('pa', ''))
+    set_cell(ws, 'B10', txt(loan.get('pa', '')))
 
     set_cell(ws, 'B13', 'Loan Commitment:', bold=True)
     set_cell(ws, 'C13', float(loan.get('na') or 0), bold=True, number_format=currency_fmt)
