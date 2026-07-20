@@ -3,6 +3,7 @@ from flask_cors import CORS
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 from datetime import datetime, timedelta
+from collections import OrderedDict
 import io
 import re
 
@@ -12,13 +13,13 @@ CORS(app)
 currency_fmt = '_("$"* #,##0.00_);_("$"* \\(#,##0.00\\);_("$"* "-"??_);_(@_)'
 pct_fmt = '0.00%'
 
+
 def parse_date(s):
     """Parse a date string. Strips any trailing time component.
     Returns None if unparseable (caller decides fallback) — never silently returns today."""
     if not s:
         return None
     s = str(s).strip()
-    # strip a trailing time like "12:00 am", "12:00 AM", "00:00:00"
     s_date = re.split(r'\s+\d{1,2}:\d{2}', s)[0].strip()
     for fmt in ('%m/%d/%Y', '%m/%d/%y', '%Y-%m-%d', '%b %d, %Y', '%B %d, %Y', '%b %d %Y'):
         try:
@@ -26,6 +27,17 @@ def parse_date(s):
         except:
             pass
     return None
+
+
+def month_bounds(anchor):
+    """Return (first_day, last_day) of the month containing anchor."""
+    start = anchor.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        nxt = start.replace(year=start.year + 1, month=1)
+    else:
+        nxt = start.replace(month=start.month + 1)
+    return start, nxt - timedelta(days=1)
+
 
 def set_cell(ws, coord, value, bold=False, align=None, number_format=None):
     cell = ws[coord]
@@ -36,95 +48,118 @@ def set_cell(ws, coord, value, bold=False, align=None, number_format=None):
     if number_format:
         cell.number_format = number_format
 
+
+def apply_group(acts, bal, rate, spread, floor):
+    """Apply every activity that shares one date. Returns (memo, net_trans, bal, rate)."""
+    memos = []
+    net = 0.0
+    for act in acts:
+        dis = float(act.get('dis') or 0)
+        pp = float(act.get('pp') or 0)
+        ip = float(act.get('ip') or 0)
+        pr = act.get('pr')
+
+        if dis:
+            bal += dis
+            net += dis
+        if pp:
+            bal -= pp
+            net -= pp
+        if ip:
+            bal += ip
+            net += ip
+        if pr is not None and pr != '':
+            rate = max(spread + float(pr), floor)
+
+        t = (act.get('t') or '').strip()
+        if t and t not in memos:
+            memos.append(t)
+
+    return ' / '.join(memos), net, bal, rate
+
+
 @app.route('/generate', methods=['POST'])
 def generate():
     data = request.json
     loan = data.get('loan', {})
     activities = data.get('activities', [])
 
-    # keep only activities with a valid, parseable date
     activities = [a for a in activities
                   if a.get('d') and parse_date(a.get('d')) is not None
                   and a.get('t') not in ('EDPC', 'Notes')]
     activities.sort(key=lambda x: parse_date(x.get('d')))
 
-    if activities:
-        first_date = parse_date(activities[0]['d'])
+    # ---- Statement period: driven by the client's selected month ----
+    period_start = parse_date(loan.get('period_start'))
+    period_end = parse_date(loan.get('period_end'))
+    if period_start is None or period_end is None:
+        if activities:
+            anchor = parse_date(activities[-1]['d'])      # most recent, not oldest
+        else:
+            anchor = parse_date(loan.get('fd')) or datetime.now()
+        period_start, period_end = month_bounds(anchor)
     else:
-        first_date = parse_date(loan.get('fd')) or datetime.now()
+        period_start, _ = month_bounds(period_start)
+        _, period_end = month_bounds(period_end)
+    statement_date = period_end + timedelta(days=1)
 
-    # Statement month framed by the first activity's month
-    billing_month_start = first_date.replace(day=1)
-    if billing_month_start.month == 12:
-        next_month = billing_month_start.replace(year=billing_month_start.year + 1, month=1)
-    else:
-        next_month = billing_month_start.replace(month=billing_month_start.month + 1)
-    billing_month_end = next_month - timedelta(days=1)
-    statement_date = next_month
+    funding_date = parse_date(loan.get('fd'))
+    if funding_date is None:
+        funding_date = parse_date(activities[0]['d']) if activities else period_start
 
-    # Accrual begins on funding date; fall back to first activity date if funding date missing/bad
-    funding_date = parse_date(loan.get('fd')) or first_date
+    spread = float(loan.get('spread') or 0)
+    floor = float(loan.get('floor') or 0)
+    bal = float(loan.get('bp') or loan.get('bal') or 0)
+    rate = float(loan.get('rate') or 0)
 
-    running_balance = float(loan.get('bp') or loan.get('bal') or 0)
-    current_rate = float(loan.get('rate') or 0)
-    loan_spread = float(loan.get('spread') or 0)
-    floor_rate = float(loan.get('floor') or 0)
-
-    # Build segment boundaries: funding date (opening), then each activity date.
-    # Each segment carries the balance/rate in effect for that segment (post-event),
-    # runs from its start to the day before the next boundary (final: to month end, inclusive).
-    boundaries = []
-    boundaries.append({
-        'date': funding_date,
-        'memo': 'Balance Forward',
-        'trans': 0,
-        'balance': running_balance,
-        'rate': current_rate
-    })
-
-    bal = running_balance
-    rate = current_rate
+    # ---- Group activities by date, drop anything after the period ----
+    grouped = OrderedDict()
     for act in activities:
-        act_date = parse_date(act['d'])
-        dis = float(act.get('dis') or 0)
-        pp = float(act.get('pp') or 0)
-        ip = float(act.get('ip') or 0)
-        pr = act.get('pr')
-        trans_amt = 0
+        d = parse_date(act['d'])
+        if d > period_end:
+            continue
+        grouped.setdefault(d, []).append(act)
 
-        if dis:
-            bal += dis
-            trans_amt = dis
-        if pp:
-            bal -= pp
-            trans_amt = pp
-        if ip:
-            bal += ip
-            trans_amt = ip
-        if pr is not None and pr != '':
-            new_prime = float(pr)
-            rate = max(loan_spread + new_prime, floor_rate)
-            trans_amt = 0
+    # ---- Replay pre-period activity into the opening balance (no rows emitted) ----
+    events = []
+    for d in sorted(grouped.keys()):
+        memo, net, bal, rate = apply_group(grouped[d], bal, rate, spread, floor)
+        if d < period_start:
+            continue
+        events.append({'date': d, 'memo': memo or 'Activity',
+                       'trans': net, 'balance': bal, 'rate': rate})
 
-        boundaries.append({
-            'date': act_date,
-            'memo': act.get('t', ''),
-            'trans': trans_amt,
-            'balance': bal,
-            'rate': rate
-        })
+    # Opening state = balance/rate after all pre-period replay, before in-period events.
+    # Recomputed from scratch so the opening row is unambiguous.
+    o_bal = float(loan.get('bp') or loan.get('bal') or 0)
+    o_rate = float(loan.get('rate') or 0)
+    for d in sorted(grouped.keys()):
+        if d < period_start:
+            _, _, o_bal, o_rate = apply_group(grouped[d], o_bal, o_rate, spread, floor)
 
+    # ---- Boundaries: opening row clipped to the period, then in-period events ----
+    opening_start = max(period_start, funding_date)
+    boundaries = [{'date': opening_start, 'memo': 'Balance Forward',
+                   'trans': 0, 'balance': o_bal, 'rate': o_rate}]
+    boundaries.extend(e for e in events if e['date'] >= opening_start)
+
+    # ---- Segment the period ----
     rows = []
-    total_interest = 0
+    total_interest = 0.0
     for i, seg in enumerate(boundaries):
         start = seg['date']
+        if start > period_end:
+            continue
         if i < len(boundaries) - 1:
-            next_date = boundaries[i + 1]['date']
-            days = (next_date - start).days
-            to_date = next_date - timedelta(days=1)
+            nxt = boundaries[i + 1]['date']
+            days = (nxt - start).days
+            to_date = nxt - timedelta(days=1)
         else:
-            days = (billing_month_end - start).days + 1  # final segment inclusive to month end
-            to_date = billing_month_end
+            days = (period_end - start).days + 1
+            to_date = period_end
+
+        if days <= 0 and seg['trans'] == 0:
+            continue  # opening row superseded by an event on the same date
 
         interest = round(seg['balance'] * seg['rate'] / 360 * days, 2) if days > 0 else 0
         total_interest += interest
@@ -142,15 +177,13 @@ def generate():
 
     total_interest = round(total_interest, 2)
     all_rows = rows
-    running_balance = boundaries[-1]['balance']
+    closing_balance = boundaries[-1]['balance'] if boundaries else o_bal
 
     wb = Workbook()
     ws = wb.active
     ws.title = 'Billing Statement'
 
-    col_widths = {
-        'A': 35, 'B': 20, 'C': 18, 'D': 20, 'E': 28, 'F': 12, 'G': 30, 'H': 16
-    }
+    col_widths = {'A': 35, 'B': 20, 'C': 18, 'D': 20, 'E': 28, 'F': 12, 'G': 30, 'H': 16}
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
 
@@ -159,7 +192,7 @@ def generate():
 
     set_cell(ws, 'A2', loan.get('bn', ''))
     set_cell(ws, 'G2', 'As of Date:', align='right')
-    set_cell(ws, 'H2', billing_month_end.strftime('%m/%d/%Y'))
+    set_cell(ws, 'H2', period_end.strftime('%m/%d/%Y'))
 
     set_cell(ws, 'A4', '1111 North Post Oak Road')
     set_cell(ws, 'G4', 'Statement Date:', align='right')
@@ -182,16 +215,16 @@ def generate():
     set_cell(ws, 'E15', 'Amount Due', bold=True)
 
     set_cell(ws, 'A16', 'INTEREST BILLING - PERIOD END')
-    set_cell(ws, 'C16', billing_month_end.strftime('%m/%d/%Y'), align='left')
+    set_cell(ws, 'C16', period_end.strftime('%m/%d/%Y'), align='left')
     set_cell(ws, 'D16', statement_date.strftime('%m/%d/%Y'), align='left')
     set_cell(ws, 'E16', total_interest, bold=True, number_format=currency_fmt)
 
     set_cell(ws, 'D17', 'Total:')
     set_cell(ws, 'E17', total_interest, bold=True, number_format=currency_fmt)
 
-    headers = [('A','Memo Description'),('C','Principal Balance'),
-               ('D','Transaction Amount'),('E','From / To Date'),('F','# of Days'),
-               ('G','Rate'),('H','Interest Due')]
+    headers = [('A', 'Memo Description'), ('C', 'Principal Balance'),
+               ('D', 'Transaction Amount'), ('E', 'From / To Date'), ('F', '# of Days'),
+               ('G', 'Rate'), ('H', 'Interest Due')]
     for col, val in headers:
         set_cell(ws, f'{col}20', val, bold=True, align='center')
 
@@ -209,7 +242,7 @@ def generate():
 
     total_row = 21 + len(all_rows)
     set_cell(ws, f'B{total_row}', 'Total:', bold=True, align='right')
-    set_cell(ws, f'C{total_row}', running_balance, bold=True, number_format=currency_fmt)
+    set_cell(ws, f'C{total_row}', closing_balance, bold=True, number_format=currency_fmt)
     set_cell(ws, f'D{total_row}', sum(r['trans'] for r in all_rows), bold=True, number_format=currency_fmt)
     set_cell(ws, f'G{total_row}', 'Total Interest for the Month:', bold=True, align='right')
     set_cell(ws, f'H{total_row}', total_interest, bold=True, number_format=currency_fmt)
@@ -222,13 +255,15 @@ def generate():
     wb.save(buffer)
     buffer.seek(0)
 
-    filename = f"{loan.get('ln', 'Loan')}_Billing_Statement.xlsx"
+    filename = f"{loan.get('ln', 'Loan')}_{period_end.strftime('%Y-%m')}_Billing_Statement.xlsx"
     return send_file(buffer, as_attachment=True, download_name=filename,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
+
 
 if __name__ == '__main__':
     app.run(debug=True)
