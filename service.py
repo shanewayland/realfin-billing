@@ -63,6 +63,22 @@ def rate(v):
     return x / 100.0 if x > 1 else x
 
 
+def prime_at(loan, day):
+    """Prime in effect on `day`. A change entered on D takes effect D+1 (engine rule 6).
+
+    The legacy statement writer only receives prime changes that fall inside the
+    statement month, so it cannot see history. This resolves the correct prime
+    before handing the rate over.
+    """
+    cur = loan.initial_prime
+    for c in sorted(loan.prime_changes, key=lambda c: c.date):
+        if c.date < day:
+            cur = c.prime
+        else:
+            break
+    return cur
+
+
 def build_loan(d):
     """Assemble a Loan from the request body. Raises ValueError on missing essentials."""
     start = parse_date(d.get('accrual_start') or d.get('fd') or d.get('funding_date'))
@@ -249,7 +265,7 @@ def statement():
                 'ln': loan.number, 'bn': loan.borrower, 'na': loan.commitment,
                 'pa': loan.property_address,
                 'bp': row.beginning_balance,
-                'rate': loan.effective_rate(loan.initial_prime),
+                'rate': loan.effective_rate(prime_at(loan, row.period_start)),
                 'spread': loan.spread, 'floor': loan.floor,
                 'fd': loan.funding_date.isoformat(),
                 'period_start': row.period_start.isoformat(),
