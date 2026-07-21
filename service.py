@@ -16,7 +16,7 @@ WHY /statement EXISTS
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import io
 import re
 import traceback
@@ -132,11 +132,17 @@ def row_json(loan, r, include_segments=False):
         'past_maturity': r.past_maturity,
     }
     if include_segments:
-        out['segments'] = [seg_json(s) for s in r.segments]
+        # A prime change entered on date D takes effect D+1, which is where the
+        # segment opens. Report the new prime only on that segment; blank elsewhere.
+        # A prime change entered on D takes effect D+1, which is where the accrual
+        # segment opens. The LINE ITEM keeps her entry date, memo and note; only the
+        # from/to dates reflect when the new rate actually starts running.
+        changes = {c.date + timedelta(days=1): c for c in loan.prime_changes}
+        out['segments'] = [seg_json(s, changes.get(s.start)) for s in r.segments]
     return out
 
 
-def seg_json(s):
+def seg_json(s, prime_change=None):
     """One activity line. The transaction is split across the columns the
     monthly page already shows, so each maps 1:1 with no Bubble-side logic."""
     memo = (s.memo or '').lower()
@@ -147,9 +153,13 @@ def seg_json(s):
         pay = round(abs(s.trans), 2)
     elif 'interest' in memo:
         intp = round(s.trans, 2)
+    memo = prime_change.memo if prime_change else s.memo
+    notes = (prime_change.notes if prime_change else s.notes) or ''
+    activity_date = (prime_change.date if prime_change else s.start).isoformat()
+
     return {
-        'memo': s.memo,
-        'activity_date': s.start.isoformat(),
+        'memo': memo,
+        'activity_date': activity_date,
         'start': s.start.isoformat(),
         'end': s.end.isoformat(),
         'days': s.days,
@@ -160,7 +170,8 @@ def seg_json(s):
         'paydown': pay,
         'rate': s.rate,
         'prime_rate': s.prime,
-        'notes': s.notes or '',
+        'prime_rate_change': prime_change.prime if prime_change else None,
+        'notes': notes,
         'interest': round(s.interest, 2),
     }
 
