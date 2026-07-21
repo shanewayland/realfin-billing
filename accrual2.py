@@ -36,6 +36,7 @@ class Disbursement:
     date: date
     amount: float
     memo: str = "Disbursement to Borrower"
+    notes: str = ""
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class Paydown:
     date: date
     amount: float
     memo: str = "Principal Paydown"
+    notes: str = ""
 
 
 @dataclass(frozen=True)
@@ -50,12 +52,15 @@ class InterestPayment:
     date: date
     amount: float
     memo: str = "Interest Payment"
+    notes: str = ""
 
 
 @dataclass(frozen=True)
 class PrimeChange:
     date: date
     prime: float
+    notes: str = ""
+    memo: str = "Prime Rate Change"
 
 
 @dataclass
@@ -92,6 +97,8 @@ class DaySegment:
     rate: float
     memo: str
     trans: float
+    notes: str = ""
+    prime: Optional[float] = None
 
     @property
     def days(self) -> int:
@@ -145,15 +152,17 @@ def build_schedule(loan: Loan, months: int = 60,
 
     by_date = {}
 
-    def put(d, kind, amount, memo):
-        by_date.setdefault(d, []).append((kind, amount, memo))
+    def put(d, kind, amount, memo, notes="", prime=None):
+        by_date.setdefault(d, []).append((kind, amount, memo, notes, prime))
 
     for x in loan.disbursements:
-        put(x.date, "disb", x.amount, x.memo)
+        put(x.date, "disb", x.amount, x.memo, x.notes)
     for x in loan.paydowns:
-        put(x.date, "pay", x.amount, x.memo)
+        put(x.date, "pay", x.amount, x.memo, x.notes)
     for x in loan.interest_payments:
-        put(x.date, "int", x.amount, x.memo)
+        put(x.date, "int", x.amount, x.memo, x.notes)
+    for c in loan.prime_changes:
+        put(c.date, "prime", 0.0, c.memo, c.notes, c.prime)
 
     primes = sorted(loan.prime_changes, key=lambda c: c.date)
 
@@ -199,11 +208,18 @@ def build_schedule(loan: Loan, months: int = 60,
         seg_rate = loan.effective_rate(prime_on(period_start))
         seg_memo = "Balance Forward"
         seg_trans = 0.0
+        seg_notes = ""
+        seg_prime = prime_on(period_start)
 
         day = period_start
         while day <= period_end:
             memos, trans = [], 0.0
-            for kind, amount, memo in by_date.get(day, []):
+            notes_today, prime_today = [], None
+            for kind, amount, memo, note, pr in by_date.get(day, []):
+                if note:
+                    notes_today.append(note)
+                if pr is not None:
+                    prime_today = pr
                 if kind == "disb":
                     balance = round(balance + amount, 2)
                     escrow = round(escrow - amount, 2)
@@ -218,27 +234,34 @@ def build_schedule(loan: Loan, months: int = 60,
                     reserve = round(reserve - amount, 2)
                     month_int += amount
                     trans += amount
-                if memo not in memos:
+                if memo and memo not in memos:
                     memos.append(memo)
 
             rate = loan.effective_rate(prime_on(day))
 
             if (balance != seg_balance or rate != seg_rate) and day > seg_start:
                 segments.append(DaySegment(seg_start, day - timedelta(days=1),
-                                           seg_balance, seg_rate, seg_memo, seg_trans))
+                                           seg_balance, seg_rate, seg_memo, seg_trans,
+                                           seg_notes, seg_prime))
                 seg_start = day
                 seg_memo = " / ".join(memos) if memos else "Rate Change"
                 seg_trans = trans
-            elif day == seg_start and memos:
-                seg_memo = " / ".join(memos)
-                seg_trans += trans
+                seg_notes = " / ".join(notes_today)
+                seg_prime = prime_on(day)
+            elif day == seg_start:
+                if memos:
+                    seg_memo = " / ".join(memos)
+                    seg_trans += trans
+                if notes_today:
+                    seg_notes = " / ".join(notes_today)
+                seg_prime = prime_on(day)
             seg_balance, seg_rate = balance, rate
 
             accrued += balance * rate / 360
             day += timedelta(days=1)
 
         segments.append(DaySegment(seg_start, period_end, seg_balance, seg_rate,
-                                   seg_memo, seg_trans))
+                                   seg_memo, seg_trans, seg_notes, seg_prime))
         accrued = round(accrued, 2)
 
         row = MonthRow(
