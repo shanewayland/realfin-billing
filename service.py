@@ -78,8 +78,9 @@ def build_loan(d):
         for e in d.get(key) or []:
             dt = parse_date(e.get('d') or e.get('date'))
             amt = num(e.get(amount_key, e.get('amount')))
+            note = str(e.get('n', e.get('notes', '')) or '').strip()
             if dt and amt:
-                out.append(cls(dt, amt))
+                out.append(cls(dt, amt, notes=note))
         return out
 
     primes = []
@@ -87,7 +88,8 @@ def build_loan(d):
         dt = parse_date(e.get('d') or e.get('date'))
         pr = e.get('pr', e.get('prime'))
         if dt and pr not in (None, ''):
-            primes.append(PrimeChange(dt, rate(pr)))
+            note = str(e.get('n', e.get('notes', '')) or '').strip()
+            primes.append(PrimeChange(dt, rate(pr), notes=note))
 
     return Loan(
         number=str(d.get('ln', d.get('loan_number', ''))).strip(),
@@ -157,6 +159,8 @@ def seg_json(s):
         'disbursement': disb,
         'paydown': pay,
         'rate': s.rate,
+        'prime_rate': s.prime,
+        'notes': s.notes or '',
         'interest': round(s.interest, 2),
     }
 
