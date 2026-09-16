@@ -29,7 +29,14 @@ def check(label, ok, got=''):
 
 c = app.test_client()
 H = {'X-Cron-Key': 'k'}
-with mock.patch.object(monthly, 'fetch_bubble', return_value=(LOANS, ACTS)):
+def fake_call(version, payload):
+    if not payload:
+        return {'loans': LOANS, 'activities': [], 'activity_count': 0}
+    mine = [a for a in ACTS if a['loan'] == payload['loan']]
+    off = payload['offset']
+    return {'activities': mine[off:off + monthly.PAGE], 'activity_count': len(mine)}
+
+with mock.patch.object(monthly, '_call_bubble', side_effect=fake_call):
     check('rejects missing key', c.post('/monthly-statements').status_code == 401)
     check('rejects wrong key', c.post('/monthly-statements', headers={'X-Cron-Key': 'x'}).status_code == 401)
 
@@ -74,4 +81,26 @@ with mock.patch.object(monthly, 'fetch_bubble', return_value=(LOANS, ACTS)):
 
 check('UTC midnight-CT date converts to Houston date', monthly.central_date('2026-09-01T05:00:00.000Z') == '2026-09-01')
 check('prior month across year', monthly.prior_month(monthly.date(2027, 1, 1)) == monthly.date(2026, 12, 1))
+
+# paging: 250 entries for one loan must all arrive (3 pages)
+many = [{"loan": "L2", "activity_date": "2026-07-01T05:00:00.000Z", "interest_payment": 1}] * 250
+calls = []
+def paged(version, payload):
+    calls.append(payload)
+    off = payload['offset']
+    return {'activities': many[off:off + 100], 'activity_count': 250}
+with mock.patch.object(monthly, '_call_bubble', side_effect=paged):
+    items, expected = monthly.fetch_activity('live', 'L2')
+check('paging gets all 250 entries', len(items) == 250 and expected == 250, len(items))
+check('paging used offsets 0/100/200', [c['offset'] for c in calls] == [0, 100, 200], [c['offset'] for c in calls])
+
+# Bubble returned fewer entries than it counted: no statement for that loan
+def short(version, payload):
+    if not payload:
+        return {'loans': LOANS[:1]}
+    return {'activities': ACTS[:1], 'activity_count': 5}
+with mock.patch.object(monthly, '_call_bubble', side_effect=short):
+    r = c.post('/monthly-statements?dry_run=1&period=2026-09-01', headers=H).json
+check('incomplete activity is skipped, not billed', r['statements'] == [] and 'only 1 of 5' in r['skipped'][0], r['skipped'])
+
 print(f"\n  {P} passed, {F} failed")

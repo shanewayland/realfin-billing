@@ -4,8 +4,9 @@ Monthly billing-statement email.
 POST /monthly-statements   (header X-Cron-Key must equal env CRON_KEY)
 
 On the 1st of each month a GitHub Actions schedule calls this endpoint. It:
-  1. pulls every Closed loan and its activity from Bubble (backend workflow
-     `statement_data`, admin-only, called with BUBBLE_API_TOKEN),
+  1. pulls every Closed loan from Bubble (backend workflow `statement_data`,
+     admin-only, called with BUBBLE_API_TOKEN), then each loan's activity
+     100 entries at a time, checked against Bubble's count,
   2. builds last month's statement for each loan with the same /statement
      code the Download Billing Statement button uses,
   3. emails all of them in one message from MAIL_FROM to MAIL_TO.
@@ -82,17 +83,38 @@ def prior_month(today):
     return (first - timedelta(days=1)).replace(day=1)
 
 
-def fetch_bubble(version):
+def _call_bubble(version, payload):
     base = os.environ.get('BUBBLE_BASE', 'https://realfin.elevateebs.com').rstrip('/')
     path = '/version-test' if version == 'test' else ''
     req = urllib.request.Request(
-        f'{base}{path}/api/1.1/wf/statement_data', data=b'{}', method='POST',
+        f'{base}{path}/api/1.1/wf/statement_data', data=json.dumps(payload).encode(),
+        method='POST',
         headers={'Authorization': f"Bearer {os.environ['BUBBLE_API_TOKEN']}",
                  'Content-Type': 'application/json'})
     with urllib.request.urlopen(req, timeout=60) as r:
         body = json.loads(r.read().decode())
-    resp = body.get('response', body)
-    return resp.get('loans') or [], resp.get('activities') or []
+    return body.get('response', body)
+
+
+PAGE = 100
+
+
+def fetch_loans(version):
+    return _call_bubble(version, {}).get('loans') or []
+
+
+def fetch_activity(version, loan_id):
+    """All activity for one loan, 100 at a time. Returns (items, expected_count)."""
+    items, expected, offset = [], None, 0
+    while True:
+        resp = _call_bubble(version, {'loan': loan_id, 'offset': offset})
+        page = resp.get('activities') or []
+        if expected is None:
+            expected = int(resp.get('activity_count') or 0)
+        items.extend(page)
+        offset += PAGE
+        if len(page) < PAGE or len(items) >= expected:
+            return items, expected
 
 
 def loan_payload(loan, acts):
@@ -169,18 +191,21 @@ def monthly_statements():
     dry = bool(request.args.get('dry_run'))
     to_addr = request.args.get('to') or os.environ.get('MAIL_TO', '')
 
-    loans, activities = fetch_bubble(request.args.get('bubble', 'live'))
-    by_loan = {}
-    for a in activities:
-        by_loan.setdefault(field(a, 'loan'), []).append(a)
+    version = request.args.get('bubble', 'live')
+    loans = fetch_loans(version)
     loans.sort(key=lambda l: str(field(l, 'loan_number', default='')))
 
     from service import app  # the same /statement code the page uses
     client = app.test_client()
-    files, skipped = [], []
+    files, skipped, counts = [], [], {}
     for loan in loans:
-        body = loan_payload(loan, by_loan.get(loan.get('_id'), []))
+        acts, expected = fetch_activity(version, loan.get('_id'))
+        body = loan_payload(loan, acts)
         label = f"{body['ln']} {body['bn']}".strip()
+        counts[body['ln'] or label] = len(acts)
+        if len(acts) != expected:
+            skipped.append(f"{label}: only {len(acts)} of {expected} activity entries came back from RealFin")
+            continue
         r = client.post('/statement', json={'loan': body, 'period': period.isoformat(),
                                             'actuals_through': today.isoformat()})
         if r.status_code == 200:
@@ -189,7 +214,7 @@ def monthly_statements():
             skipped.append(f"{label}: {(r.get_json(silent=True) or {}).get('error', r.status_code)}")
 
     summary = {'period': period.strftime('%B %Y'), 'to': to_addr, 'statements': [f for f, _ in files],
-               'skipped': skipped, 'sent': False}
+               'skipped': skipped, 'activity_counts': counts, 'sent': False}
     if dry:
         return jsonify(summary)
     if not files and not skipped:
