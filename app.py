@@ -187,7 +187,8 @@ def generate():
     ws = wb.active
     ws.title = 'Billing Statement'
 
-    col_widths = {'A': 35, 'B': 20, 'C': 21, 'D': 22, 'E': 28, 'F': 12, 'G': 30, 'H': 16}
+    # Column widths match the statement layout she prints from (landscape, letter).
+    col_widths = {'A': 25.71, 'B': 5, 'C': 18, 'D': 20, 'E': 22.14, 'F': 12, 'G': 17.29, 'H': 16}
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
 
@@ -210,7 +211,7 @@ def generate():
     set_cell(ws, 'A10', 'Address:', align='right')
     set_cell(ws, 'B10', txt(loan.get('pa', '')))
 
-    set_cell(ws, 'B13', 'Loan Commitment:', bold=True)
+    set_cell(ws, 'B13', 'Loan Commitment:', bold=True, align='right')
     set_cell(ws, 'C13', float(loan.get('na') or 0), bold=True, number_format=currency_fmt)
 
     set_cell(ws, 'A15', 'Memo Description', bold=True)
@@ -255,23 +256,15 @@ def generate():
     set_cell(ws, f'G{pay_row}', 'PLEASE PAY THIS AMOUNT:', bold=True, align='right')
     set_cell(ws, f'H{pay_row}', total_interest, bold=True, number_format=currency_fmt)
 
-    # ---- Print layout: one landscape page wide, ready for Print to PDF ----
-    # Address can be long; let it wrap across B:H instead of running off the page.
-    ws.merge_cells('B10:H10')
-    ws['B10'].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
-    ws.row_dimensions[10].height = 30
-    ws['A10'].alignment = Alignment(horizontal='right', vertical='top')
+    # ---- Print layout: matches her hand-adjusted statement ----
+    ws['A16'].font = Font(name='Aptos Narrow', size=10)
     ws.page_setup.orientation = 'landscape'
     ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
-    ws.page_setup.fitToWidth = 1
-    ws.page_setup.fitToHeight = 0          # as many pages tall as needed
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
-    ws.page_margins.left = ws.page_margins.right = 0.4
-    ws.page_margins.top = ws.page_margins.bottom = 0.5
-    ws.page_margins.header = ws.page_margins.footer = 0.25
-    ws.print_options.horizontalCentered = True
-    ws.print_area = f'A1:H{pay_row}'
-    ws.print_title_rows = '20:20'          # repeat the activity header if it runs long
+    ws.page_margins.left = ws.page_margins.right = 0.25
+    ws.page_margins.top = ws.page_margins.bottom = 0.75
+    ws.page_margins.header = ws.page_margins.footer = 0.3
+    ws.print_area = f'A1:H{pay_row + 1}'
+    ws.print_title_rows = '20:20'          # repeat the activity header if a month runs to page 2
 
     buffer = io.BytesIO()
     wb.save(buffer)
