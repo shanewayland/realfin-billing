@@ -1,0 +1,44 @@
+name: Monthly billing statements
+
+# 8:00am Houston time on the 1st. Two triggers cover daylight saving time;
+# the service only sends on the one that lands at 8am Central.
+on:
+  schedule:
+    - cron: '0 13 1 * *'
+    - cron: '0 14 1 * *'
+  workflow_dispatch:
+    inputs:
+      to:
+        description: 'Send to this address instead of Holly (leave blank for Holly)'
+        required: false
+      bubble:
+        description: 'Bubble database: live or test'
+        required: false
+        default: 'live'
+      dry_run:
+        description: 'Build only, do not send (yes/no)'
+        required: false
+        default: 'no'
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the service
+        run: curl -s --max-time 120 https://realfin-billing.onrender.com/health || true
+      - name: Build and email statements
+        env:
+          CRON_KEY: ${{ secrets.CRON_KEY }}
+          TO: ${{ github.event.inputs.to }}
+          BUBBLE: ${{ github.event.inputs.bubble }}
+          DRY: ${{ github.event.inputs.dry_run }}
+        run: |
+          q=""
+          if [ "${{ github.event_name }}" = "schedule" ]; then q="scheduled=1"; fi
+          if [ -n "$TO" ]; then q="$q&to=$(python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["TO"]))')"; fi
+          if [ "$BUBBLE" = "test" ]; then q="$q&bubble=test"; fi
+          if [ "$DRY" = "yes" ]; then q="$q&dry_run=1"; fi
+          code=$(curl -s -o out.json -w '%{http_code}' --max-time 300 -X POST \
+            -H "X-Cron-Key: $CRON_KEY" "https://realfin-billing.onrender.com/monthly-statements?$q")
+          cat out.json; echo
+          test "$code" = "200"
