@@ -187,7 +187,7 @@ def generate():
     ws = wb.active
     ws.title = 'Billing Statement'
 
-    col_widths = {'A': 35, 'B': 20, 'C': 18, 'D': 20, 'E': 28, 'F': 12, 'G': 30, 'H': 16}
+    col_widths = {'A': 35, 'B': 20, 'C': 21, 'D': 22, 'E': 28, 'F': 12, 'G': 30, 'H': 16}
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
 
@@ -254,6 +254,24 @@ def generate():
     pay_row = total_row + 3
     set_cell(ws, f'G{pay_row}', 'PLEASE PAY THIS AMOUNT:', bold=True, align='right')
     set_cell(ws, f'H{pay_row}', total_interest, bold=True, number_format=currency_fmt)
+
+    # ---- Print layout: one landscape page wide, ready for Print to PDF ----
+    # Address can be long; let it wrap across B:H instead of running off the page.
+    ws.merge_cells('B10:H10')
+    ws['B10'].alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    ws.row_dimensions[10].height = 30
+    ws['A10'].alignment = Alignment(horizontal='right', vertical='top')
+    ws.page_setup.orientation = 'landscape'
+    ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0          # as many pages tall as needed
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins.left = ws.page_margins.right = 0.4
+    ws.page_margins.top = ws.page_margins.bottom = 0.5
+    ws.page_margins.header = ws.page_margins.footer = 0.25
+    ws.print_options.horizontalCentered = True
+    ws.print_area = f'A1:H{pay_row}'
+    ws.print_title_rows = '20:20'          # repeat the activity header if it runs long
 
     buffer = io.BytesIO()
     wb.save(buffer)
