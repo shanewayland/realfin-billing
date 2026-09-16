@@ -319,6 +319,10 @@ def generate_passthrough():
         return legacy.generate()
 
 
+from monthly import bp as monthly_bp  # noqa: E402  (monthly statement email)
+app.register_blueprint(monthly_bp)
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'engine': 'accrual2'})
