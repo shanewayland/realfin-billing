@@ -141,7 +141,7 @@ def row_json(loan, r, include_segments=False):
         'days_accrued': r.days_accrued,
         'accrued_interest': round(r.accrued_interest, 2),
         'ending_balance': round(r.ending_balance, 2),
-        'effective_rate': loan.effective_rate(loan.initial_prime),
+        'effective_rate': round(loan.effective_rate(prime_at(loan, r.period_start)), 6),
         'escrow_remaining': round(r.escrow_remaining, 2),
         'reserve_remaining': round(r.reserve_remaining, 2),
         'projected': r.projected,
@@ -246,8 +246,15 @@ def statement():
                                      f'{rows[-1].month_date:%b %Y}'}), 400
 
         acts = []
-        if row.interest_paid:
-            acts.append({'d': row.month_date.isoformat(), 't': 'Interest Payment',
+        # Interest payments: use the entered dates so the statement splits the
+        # month exactly where the engine does. In projected months the engine
+        # capitalizes on period_start, so mirror that.
+        entered = [x for x in loan.interest_payments
+                   if row.period_start <= x.date <= row.period_end]
+        for x in entered:
+            acts.append({'d': x.date.isoformat(), 't': x.memo, 'ip': x.amount})
+        if row.projected and row.interest_paid and not entered:
+            acts.append({'d': row.period_start.isoformat(), 't': 'Interest Payment',
                          'ip': row.interest_paid})
         for x in loan.disbursements:
             if row.period_start <= x.date <= row.period_end:
@@ -255,9 +262,13 @@ def statement():
         for x in loan.paydowns:
             if row.period_start <= x.date <= row.period_end:
                 acts.append({'d': x.date.isoformat(), 't': x.memo, 'pp': x.amount})
+        # Engine rule 6: a prime change entered on D takes effect D+1. The legacy
+        # writer applies a rate on the date it is given, so hand it D+1. A change
+        # entered on the last day of the month takes effect next month.
         for c in loan.prime_changes:
-            if row.period_start <= c.date <= row.period_end:
-                acts.append({'d': c.date.isoformat(), 't': 'Prime Rate Change',
+            eff = c.date + timedelta(days=1)
+            if row.period_start <= eff <= row.period_end:
+                acts.append({'d': eff.isoformat(), 't': 'Prime Rate Change',
                              'pr': c.prime})
 
         payload = {
