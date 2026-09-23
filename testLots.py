@@ -2,6 +2,7 @@
 import json
 import os
 import unittest
+import urllib.error
 
 os.environ.setdefault('BUBBLE_API_TOKEN', 'test-token')
 os.environ.pop('LOTS_KEY', None)
@@ -20,7 +21,11 @@ class FakeBubble:
     """Stands in for _req: swagger, a list endpoint and a bulk endpoint."""
 
     def __init__(self, existing=(), fail_every=None):
-        self.rows = [{'tier3': n} for n in existing]
+        # existing: lot numbers (in Ph 1 / Blk 1) or full (section, block, lot)
+        self.rows = []
+        for e in existing:
+            sec, blk, n = e if isinstance(e, tuple) else ('Ph 1', 'Blk 1', e)
+            self.rows.append({'tier1_': sec, 'tier2': blk, 'tier3': n})
         self.fail_every = fail_every
         self.bulk_calls = 0
 
@@ -90,8 +95,33 @@ class Discover(unittest.TestCase):
                                   'block': 'tier2', 'lot': 'tier3'})
 
     def test_data_api_off(self):
-        lots._req = lambda *a, **k: json.dumps({'paths': {'/obj/loan': {}}})
+        def dead(*a, **k):
+            raise urllib.error.HTTPError('u', 404, 'nope', None, None)
+        lots._req = dead
         with self.assertRaises(LookupError):
+            lots.discover('test')
+
+    def test_swagger_hidden_falls_back_to_a_record(self):
+        """Bubble can hide the swagger; field names come off a real row instead."""
+        def no_swagger(method, url, data=None, content_type='application/json'):
+            if 'swagger' in url:
+                raise urllib.error.HTTPError(url, 404, 'hidden', None, None)
+            return json.dumps({'response': {'results': [
+                {'_id': 'x', 'loan': 'loan1', 'tier1_': 'Ph 1', 'tier2': 'Blk',
+                 'tier3': 4, 'note': ''}], 'remaining': 0}})
+        lots._req = no_swagger
+        slug, fields = lots.discover('test')
+        self.assertEqual(slug, 'lot_release')
+        self.assertEqual(fields, {'loan': 'loan', 'section': 'tier1_',
+                                  'block': 'tier2', 'lot': 'tier3'})
+
+    def test_no_rows_yet_is_a_clear_error(self):
+        def empty(method, url, data=None, content_type='application/json'):
+            if 'swagger' in url:
+                raise urllib.error.HTTPError(url, 404, 'hidden', None, None)
+            return json.dumps({'response': {'results': [], 'remaining': 0}})
+        lots._req = empty
+        with self.assertRaisesRegex(LookupError, 'no rows yet'):
             lots.discover('test')
 
 
@@ -124,7 +154,7 @@ class Endpoint(unittest.TestCase):
 
     def test_skips_lots_already_there(self):
         lots._req = FakeBubble(existing=[1, 2, 3])
-        body = self.post(lots='1-5').get_json()
+        body = self.post(lots='1-5', section='Ph 1', block='Blk 1').get_json()
         self.assertEqual(body['created'], 2)
         self.assertEqual(body['skipped_existing'], 3)
         self.assertEqual(body['total_now'], 5)
@@ -136,6 +166,21 @@ class Endpoint(unittest.TestCase):
         body = r.get_json()
         self.assertEqual(body['created'], 8)
         self.assertEqual(len(body['failed']), 2)
+
+    def test_same_lot_number_in_another_block_is_not_a_duplicate(self):
+        """Ph 1/Blk 1 lots 1-3 must not block Ph 2/Blk 2 lots 1-3."""
+        lots._req = FakeBubble(existing=[('Ph 1', 'Blk 1', 1), ('Ph 1', 'Blk 1', 2),
+                                         ('Ph 1', 'Blk 1', 3)])
+        body = self.post(lots='1-3', section='Ph 2', block='Blk 2').get_json()
+        self.assertEqual(body['created'], 3)
+        self.assertEqual(body['skipped_existing'], 0)
+        self.assertEqual(body['total_now'], 6)
+
+    def test_block_match_ignores_case_and_spacing(self):
+        lots._req = FakeBubble(existing=[('Ph 1', 'Blk 1', 1)])
+        body = self.post(lots='1-2', section=' ph 1 ', block='BLK  1').get_json()
+        self.assertEqual(body['skipped_existing'], 1)
+        self.assertEqual(body['created'], 1)
 
     def test_bad_lots_string(self):
         lots._req = FakeBubble()
