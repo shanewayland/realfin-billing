@@ -156,8 +156,13 @@ def discover(version):
 
 
 def existing_lots(version, slug, fields, loan_id):
-    """Lot numbers already on this loan, so a second click cannot duplicate."""
-    found, cursor = set(), 0
+    """What is already on this loan: (section, block, lot) triples, plus a count.
+
+    Keyed on all three, not the lot number alone: Ph 2 / Blk 2 / lot 1 is a
+    different lot from Ph 1 / Blk 1 / lot 1, and skipping it would silently
+    leave a hole at the start of every new block.
+    """
+    found, total, cursor = set(), 0, 0
     constraints = json.dumps([{'key': fields['loan'],
                                'constraint_type': 'equals', 'value': loan_id}])
     while True:
@@ -166,12 +171,20 @@ def existing_lots(version, slug, fields, loan_id):
                f'&constraints={urllib.parse.quote(constraints)}')
         body = json.loads(_req('GET', url)).get('response', {})
         for row in body.get('results', []):
+            total += 1
             n = row.get(fields['lot'])
             if n not in (None, ''):
-                found.add(int(float(n)))
+                found.add((_key(row.get(fields['section'])),
+                           _key(row.get(fields['block'])),
+                           int(float(n))))
         cursor += len(body.get('results', []))
         if body.get('remaining', 0) <= 0 or not body.get('results'):
-            return found
+            return found, total
+
+
+def _key(v):
+    """Section/block compared case- and space-insensitively: 'Blk 1' == 'blk 1'."""
+    return re.sub(r'\s+', ' ', str(v or '').strip()).lower()
 
 
 def bulk_create(version, slug, rows):
@@ -221,12 +234,13 @@ def generate_lots():
 
     try:
         slug, fields = discover(version)
-        already = existing_lots(version, slug, fields, loan_id)
-        todo = [n for n in wanted if n not in already]
+        already, _ = existing_lots(version, slug, fields, loan_id)
+        here = (_key(section), _key(block))
+        todo = [n for n in wanted if (here[0], here[1], n) not in already]
         rows = [{fields['loan']: loan_id, fields['section']: section,
                  fields['block']: block, fields['lot']: n} for n in todo]
         created, failures = bulk_create(version, slug, rows) if rows else (0, [])
-        total_now = len(existing_lots(version, slug, fields, loan_id))
+        _, total_now = existing_lots(version, slug, fields, loan_id)
     except LookupError as e:
         return jsonify({'error': str(e)}), 400
     except urllib.error.HTTPError as e:
