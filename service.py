@@ -322,6 +322,9 @@ def generate_passthrough():
 from monthly import bp as monthly_bp  # noqa: E402  (monthly statement email)
 app.register_blueprint(monthly_bp)
 
+from lots import bp as lots_bp        # noqa: E402  (bulk lot creation)
+app.register_blueprint(lots_bp)
+
 
 @app.route('/health', methods=['GET'])
 def health():
