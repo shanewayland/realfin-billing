@@ -93,38 +93,66 @@ def _norm(s):
     return re.sub(r'[^a-z0-9]', '', str(s).lower())
 
 
-def discover(version):
-    """Find the lot type's Data API slug and its field keys from swagger.
+SLUG_CANDIDATES = ('lot_release', 'lotrelease', 'lot_releases', 'lotreleases')
 
-    Nothing is hard-coded: if the type or a field is renamed in Bubble this
-    reports a clear error instead of silently writing to the wrong field.
-    """
-    body = _req('GET', f'{_base(version)}/api/1.1/meta/swagger.json')
-    spec = json.loads(body)
-    slug = None
-    for path in spec.get('paths', {}):
-        m = re.fullmatch(r'/obj/([a-z0-9_]+)', path)
-        if m and 'lot' in m.group(1) and 'release' in m.group(1):
-            slug = m.group(1)
-            break
-    if not slug:
-        raise LookupError(
-            'the lot release type is not exposed on the Data API - in Bubble, '
-            'Settings > API > Enable Data API and tick the lot release type')
-    props = ((spec.get('definitions') or {}).get(slug) or {}).get('properties') or {}
-    idx = {_norm(k): k for k in props}
+FIELD_GUESSES = {'loan': ('loan',),
+                 'section': ('tier1', 'tier1_', 'section'),
+                 'block': ('tier2', 'tier2_', 'block'),
+                 'lot': ('tier3', 'tier3_', 'lotnumber', 'lot')}
+
+
+def _match_fields(keys, slug):
+    idx = {_norm(k): k for k in keys}
     fields = {}
-    for want, keys in (('loan', ('loan',)),
-                       ('section', ('tier1', 'tier1_', 'section')),
-                       ('block', ('tier2', 'tier2_', 'block')),
-                       ('lot', ('tier3', 'tier3_', 'lotnumber', 'lot'))):
-        for k in keys:
-            if _norm(k) in idx:
-                fields[want] = idx[_norm(k)]
+    for want, guesses in FIELD_GUESSES.items():
+        for g in guesses:
+            if _norm(g) in idx:
+                fields[want] = idx[_norm(g)]
                 break
         if want not in fields:
-            raise LookupError(f'no {want} field on the {slug} type ({sorted(props)})')
-    return slug, fields
+            raise LookupError(f'no {want} field on the {slug} type ({sorted(keys)})')
+    return fields
+
+
+def discover(version):
+    """Find the lot type's Data API slug and its field keys.
+
+    Reads the swagger when it is published. Bubble can hide that (Settings >
+    API > "Hide Swagger API documentation access"), so the fallback asks the
+    Data API for one existing lot row and takes the field names off it.
+    Nothing is hard-coded blindly: if neither works this raises rather than
+    writing to a guessed field.
+    """
+    try:
+        spec = json.loads(_req('GET', f'{_base(version)}/api/1.1/meta/swagger.json'))
+    except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
+        spec = None
+
+    if spec:
+        for path in spec.get('paths', {}):
+            m = re.fullmatch(r'/obj/([a-z0-9_]+)', path)
+            if m and 'lot' in m.group(1) and 'release' in m.group(1):
+                slug = m.group(1)
+                props = ((spec.get('definitions') or {}).get(slug) or {}).get('properties') or {}
+                if props:
+                    return slug, _match_fields(props.keys(), slug)
+
+    for slug in SLUG_CANDIDATES:
+        try:
+            body = json.loads(_req('GET', f'{_base(version)}/api/1.1/obj/{slug}?limit=1'))
+        except (urllib.error.HTTPError, urllib.error.URLError, ValueError):
+            continue
+        results = (body.get('response') or {}).get('results') or []
+        if not results:
+            raise LookupError(
+                f'the {slug} type has no rows yet, so the field names cannot be '
+                'read - create one lot by hand and try again')
+        keys = [k for k in results[0] if not k.startswith('_')]
+        return slug, _match_fields(keys, slug)
+
+    raise LookupError(
+        'the lot release type is not reachable on the Data API - in Bubble, '
+        'Settings > API > Enable Data API and tick the lot release type')
 
 
 def existing_lots(version, slug, fields, loan_id):
