@@ -1,12 +1,10 @@
 name: Monthly billing statements
 
-# 8:00am Houston time on the 1st. Two triggers cover daylight saving time;
-# the service only sends on the one that lands at 8am Central.
+# Render runs the schedule (cron jobs realfin-monthly-email-1300utc and -1400utc).
+# GitHub's scheduler fired hours late, so the 8am guard skipped the send every time.
+# This workflow stays as the manual backstop: Actions > Run workflow.
 on:
-  schedule:
-    - cron: '0 13 1 * *'
-    - cron: '0 14 1 * *'
-  workflow_dispatch:
+    workflow_dispatch:
     inputs:
       to:
         description: 'Send to this address instead of Holly (leave blank for Holly)'
