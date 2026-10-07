@@ -4,6 +4,10 @@ RealFin accrual engine — v2.
 RULES (confirmed with Shane, 2026-07-20):
   1. Day count is ACTUAL days / 360.
   2. effective_rate = max(spread + prime, floor), COMPUTED not stored.
+     A FIXED-RATE loan carries fixed_rate instead: that rate is the effective rate for
+     every day of the loan, and prime, spread and floor play no part. Prime rate
+     changes are ignored on a fixed-rate loan - they never move the rate and never
+     appear on the statement.
   3. A disbursement accrues interest on the day it lands, and reduces escrow holdback.
   4. A paydown reduces principal on the day it lands (symmetric with 3).
   5. An INTEREST PAYMENT is an input, entered on its own date. It capitalizes into
@@ -72,6 +76,7 @@ class Loan:
     spread: float
     floor: float
     initial_prime: float
+    fixed_rate: Optional[float] = None
     commitment: float = 0.0
     escrow_holdback: float = 0.0
     interest_reserve: float = 0.0
@@ -83,7 +88,13 @@ class Loan:
     interest_payments: List[InterestPayment] = field(default_factory=list)
     prime_changes: List[PrimeChange] = field(default_factory=list)
 
+    @property
+    def is_fixed(self) -> bool:
+        return bool(self.fixed_rate)
+
     def effective_rate(self, prime: float) -> float:
+        if self.is_fixed:
+            return self.fixed_rate
         return max(self.spread + prime, self.floor)
 
 
@@ -161,10 +172,13 @@ def build_schedule(loan: Loan, months: int = 60,
         put(x.date, "pay", x.amount, x.memo, x.notes)
     for x in loan.interest_payments:
         put(x.date, "int", x.amount, x.memo, x.notes)
-    for c in loan.prime_changes:
+    # A fixed-rate loan has no prime: any prime changes on it are ignored outright,
+    # so they neither move the rate nor show up as activity lines.
+    changes = [] if loan.is_fixed else loan.prime_changes
+    for c in changes:
         put(c.date, "prime", 0.0, c.memo, c.notes, c.prime)
 
-    primes = sorted(loan.prime_changes, key=lambda c: c.date)
+    primes = sorted(changes, key=lambda c: c.date)
 
     def prime_on(day: date) -> float:
         cur = loan.initial_prime
