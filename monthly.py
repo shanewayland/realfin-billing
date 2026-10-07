@@ -147,6 +147,7 @@ def loan_payload(loan, acts):
         'spread': field(loan, 'loan_spread_rate', default=0),
         'floor': field(loan, 'floor_rate', default=0),
         'prime': field(loan, 'initial_prime_rate', default=0),
+        'fixed_rate': field(loan, 'fixed_rate', 'fixed rate', default=0),
         'escrow_holdback': field(loan, 'escrow_holdback', default=0),
         'interest_reserve': field(loan, 'interest_reserve', default=0),
         'maturity_date': central_date(field(loan, 'maturity_date')),
