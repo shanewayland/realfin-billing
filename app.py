@@ -219,9 +219,6 @@ def generate():
 
     set_cell(ws, 'A5', 'Houston, Texas 77055')
 
-    set_cell(ws, 'A9', 'Loan Number / Unit:', align='right')
-    set_cell(ws, 'B9', txt(loan.get('ln', '')))
-
     set_cell(ws, 'A10', 'Address:', align='right')
     set_cell(ws, 'B10', txt(loan.get('pa', '')))
 
