@@ -55,15 +55,21 @@ def txt(v):
 
 
 def apply_group(acts, bal, rate, spread, floor):
-    """Apply every activity that shares one date. Returns (memo, net_trans, bal, rate)."""
-    memos = []
-    net = 0.0
+    """Expand the activity that shares one date into one statement line each.
+
+    Returns (steps, bal, rate). steps is one dict per activity, in the order they
+    were entered, each carrying its own memo, its own transaction amount and the
+    principal balance left standing after it. The caller puts the period's dates,
+    days, rate and interest on the LAST step only -- that line closes out the date.
+    """
+    steps = []
     for act in acts:
         dis = float(act.get('dis') or 0)
         pp = float(act.get('pp') or 0)
         ip = float(act.get('ip') or 0)
         pr = act.get('pr')
 
+        net = 0.0
         if dis:
             bal += dis
             net += dis
@@ -76,11 +82,12 @@ def apply_group(acts, bal, rate, spread, floor):
         if pr is not None and pr != '':
             rate = max(spread + float(pr), floor)
 
-        t = (act.get('t') or '').strip()
-        if t and t not in memos:
-            memos.append(t)
+        steps.append({'memo': (act.get('t') or '').strip() or 'Activity',
+                      'trans': net, 'balance': bal})
 
-    return ' / '.join(memos), net, bal, rate
+    if not steps:
+        steps = [{'memo': 'Activity', 'trans': 0.0, 'balance': bal}]
+    return steps, bal, rate
 
 
 @app.route('/generate', methods=['POST'])
@@ -131,14 +138,15 @@ def generate():
 
     # ---- Boundaries: opening row, then one row per activity date ----
     opening_start = max(period_start, funding_date)
-    boundaries = [{'date': opening_start, 'memo': 'Balance Forward',
-                   'trans': 0, 'balance': o_bal, 'rate': o_rate}]
+    boundaries = [{'date': opening_start,
+                   'steps': [{'memo': 'Balance Forward', 'trans': 0, 'balance': o_bal}],
+                   'balance': o_bal, 'rate': o_rate}]
 
     bal, rate = o_bal, o_rate
     for d in sorted(grouped.keys()):
-        memo, net, bal, rate = apply_group(grouped[d], bal, rate, spread, floor)
-        boundaries.append({'date': max(d, opening_start), 'memo': memo or 'Activity',
-                           'trans': net, 'balance': bal, 'rate': rate})
+        steps, bal, rate = apply_group(grouped[d], bal, rate, spread, floor)
+        boundaries.append({'date': max(d, opening_start), 'steps': steps,
+                           'balance': bal, 'rate': rate})
 
     # ---- Segment the period ----
     rows = []
@@ -168,16 +176,22 @@ def generate():
 
         total_interest += interest
 
-        rows.append({
-            'memo': seg['memo'],
-            'type': '',
-            'principal': seg['balance'],
-            'trans': seg['trans'],
-            'dates': dates,
-            'days': days,
-            'rate': seg['rate'] if seg['rate'] else None,
-            'interest': interest
-        })
+        # One line per activity. The right-hand columns belong to the date as a
+        # whole, so they sit on its last line only; the lines above it show just
+        # their own transaction and the balance it left behind.
+        steps = seg['steps']
+        for j, st in enumerate(steps):
+            last = j == len(steps) - 1
+            rows.append({
+                'memo': st['memo'],
+                'type': '',
+                'principal': st['balance'],
+                'trans': st['trans'],
+                'dates': dates if last else '',
+                'days': days if last else '',
+                'rate': (seg['rate'] if seg['rate'] else None) if last else None,
+                'interest': interest if last else ''
+            })
 
     total_interest = round(total_interest, 2)
     all_rows = rows
