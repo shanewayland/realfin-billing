@@ -12,7 +12,7 @@ RULES (confirmed with Shane, 2026-07-20):
   4. A paydown reduces principal on the day it lands (symmetric with 3).
   5. An INTEREST PAYMENT is an input, entered on its own date. It capitalizes into
      principal on that date and draws down the interest reserve.
-  6. A prime rate change entered on date D takes effect D+1.
+  6. A prime rate change entered on date D takes effect that same day, D.
   7. No bank/investor split. No EDPC.
   8. The schedule is not capped at maturity; it runs to whatever horizon is asked for.
 
@@ -183,7 +183,7 @@ def build_schedule(loan: Loan, months: int = 60,
     def prime_on(day: date) -> float:
         cur = loan.initial_prime
         for c in primes:
-            if c.date < day:
+            if c.date <= day:
                 cur = c.prime
             else:
                 break
