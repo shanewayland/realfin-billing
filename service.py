@@ -64,7 +64,7 @@ def rate(v):
 
 
 def prime_at(loan, day):
-    """Prime in effect on `day`. A change entered on D takes effect D+1 (engine rule 6).
+    """Prime in effect on `day`. A change entered on D takes effect that same day.
 
     The legacy statement writer only receives prime changes that fall inside the
     statement month, so it cannot see history. This resolves the correct prime
@@ -72,7 +72,7 @@ def prime_at(loan, day):
     """
     cur = loan.initial_prime
     for c in sorted(loan.prime_changes, key=lambda c: c.date):
-        if c.date < day:
+        if c.date <= day:
             cur = c.prime
         else:
             break
@@ -150,12 +150,12 @@ def row_json(loan, r, include_segments=False):
         'past_maturity': r.past_maturity,
     }
     if include_segments:
-        # A prime change entered on date D takes effect D+1, which is where the
-        # segment opens. Report the new prime only on that segment; blank elsewhere.
-        # A prime change entered on D takes effect D+1, which is where the accrual
-        # segment opens. The LINE ITEM keeps her entry date, memo and note; only the
-        # from/to dates reflect when the new rate actually starts running.
-        changes = {c.date + timedelta(days=1): c for c in loan.prime_changes}
+        # A prime change entered on date D takes effect that same day, which is
+        # where the segment opens. Report the new prime there; blank elsewhere.
+        # A prime change takes effect on the date it is entered, which is also
+        # where the accrual segment opens, so the line item and the new rate share
+        # that date.
+        changes = {c.date: c for c in loan.prime_changes}
         out['segments'] = [seg_json(s, changes.get(s.start)) for s in r.segments]
     return out
 
@@ -264,14 +264,12 @@ def statement():
         for x in loan.paydowns:
             if row.period_start <= x.date <= row.period_end:
                 acts.append({'d': x.date.isoformat(), 't': x.memo, 'pp': x.amount})
-        # Engine rule 6: a prime change entered on D takes effect D+1. The legacy
-        # writer applies a rate on the date it is given, so hand it D+1. A change
-        # entered on the last day of the month takes effect next month.
+        # Engine rule 6: a prime change takes effect on the date it is entered,
+        # which is also the date the legacy writer applies a rate on.
         # A fixed-rate loan has no prime, so prime changes never reach the statement.
         for c in ([] if loan.is_fixed else loan.prime_changes):
-            eff = c.date + timedelta(days=1)
-            if row.period_start <= eff <= row.period_end:
-                acts.append({'d': eff.isoformat(), 't': 'Prime Rate Change',
+            if row.period_start <= c.date <= row.period_end:
+                acts.append({'d': c.date.isoformat(), 't': 'Prime Rate Change',
                              'pr': c.prime})
 
         payload = {
