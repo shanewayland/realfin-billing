@@ -187,7 +187,7 @@ def generate():
                 'type': '',
                 'principal': st['balance'],
                 'trans': st['trans'],
-                'dates': dates if last else '',
+                'dates': dates if last else start.strftime('%m/%d/%Y'),
                 'days': days if last else '',
                 'rate': (seg['rate'] if seg['rate'] else None) if last else None,
                 'interest': interest if last else ''
