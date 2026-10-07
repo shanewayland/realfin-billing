@@ -115,6 +115,8 @@ def build_loan(d):
         spread=rate(d.get('spread', d.get('loan_spread_rate'))),
         floor=rate(d.get('floor', d.get('floor_rate'))),
         initial_prime=rate(d.get('prime', d.get('initial_prime_rate'))),
+        fixed_rate=(rate(d.get('fixed_rate', d.get('fixed')))
+                    if num(d.get('fixed_rate', d.get('fixed'))) else None),
         commitment=num(d.get('na', d.get('loan_amount'))),
         escrow_holdback=num(d.get('escrow_holdback')),
         interest_reserve=num(d.get('interest_reserve')),
@@ -265,7 +267,8 @@ def statement():
         # Engine rule 6: a prime change entered on D takes effect D+1. The legacy
         # writer applies a rate on the date it is given, so hand it D+1. A change
         # entered on the last day of the month takes effect next month.
-        for c in loan.prime_changes:
+        # A fixed-rate loan has no prime, so prime changes never reach the statement.
+        for c in ([] if loan.is_fixed else loan.prime_changes):
             eff = c.date + timedelta(days=1)
             if row.period_start <= eff <= row.period_end:
                 acts.append({'d': eff.isoformat(), 't': 'Prime Rate Change',
