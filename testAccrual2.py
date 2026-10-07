@@ -116,4 +116,34 @@ check("Apr accrual == May payment", rows[1].accrued_interest, 663.19)
 check("May accrual == Jun payment", rows[2].accrued_interest, 1289.57)
 check("Jun accrual == Jul payment", rows[3].accrued_interest, 4268.16)
 check("escrow after draw", rows[2].escrow_remaining, 2516779.38)
+print("\n[21] FIXED RATE: prime, spread and floor do not apply")
+l=base(fixed_rate=0.11, spread=0.045, floor=0.145, initial_prime=0.0675)
+check("rate is the fixed rate", l.effective_rate(0.0675), 0.11)
+check("a different prime changes nothing", l.effective_rate(0.09), 0.11)
+check("floor above it does not lift it", l.effective_rate(0.0), 0.11)
+
+print("\n[22] FIXED RATE: prime changes are ignored entirely")
+l=base(fixed_rate=0.11, prime_changes=[PrimeChange(date(2026,6,10),0.09),
+                                       PrimeChange(date(2026,7,10),0.05)])
+rows=build_schedule(l,3)
+check("no prime line in the activity", sum(1 for r in rows for s in r.segments
+                                           if "Rate Change" in (s.memo or "")), 0)
+check("every segment at the fixed rate", sum(1 for r in rows for s in r.segments
+                                             if round(s.rate,6)!=0.11), 0)
+floating=base(prime_changes=[PrimeChange(date(2026,6,10),0.09)])
+check("same loan floating DOES show the prime line",
+      sum(1 for r in build_schedule(floating,3) for s in r.segments
+          if "Rate Change" in (s.memo or "")), 1)
+
+print("\n[23] FIXED RATE: a month of interest at 11% actual/360")
+l=base(funding_date=date(2026,6,1), advanced_at_closing=1000000.0, fixed_rate=0.11)
+r=build_schedule(l,1)[0]
+check("days", r.days_accrued, 30)
+check("accrual", r.accrued_interest, round(1000000.0*0.11/360*30, 2))
+
+print("\n[24] no fixed rate means nothing changes")
+check("floating still max(spread+prime, floor)", base().effective_rate(0.0675),
+      max(base().spread+0.0675, base().floor))
+check("fixed_rate of 0 is not fixed", base(fixed_rate=0).is_fixed, False)
+
 print(f"\n{'='*52}\n  {P} passed, {F} failed\n{'='*52}")
