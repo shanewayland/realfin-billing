@@ -44,10 +44,14 @@ print("\n[7] paydown reduces day-of")
 r=build_schedule(base(paydowns=[Paydown(date(2026,6,16),50000.0)]),1)[0]
 check("interest", r.accrued_interest, 750.00)
 
-print("\n[8] prime change entered 6/15 effective 6/16")
+print("\n[8] prime change entered 6/15 takes effect that same day")
 l=base(advanced_at_closing=360000.0,spread=0.05,initial_prime=0.05,
        prime_changes=[PrimeChange(date(2026,6,15),0.06)])
-check("interest", build_schedule(l,1)[0].accrued_interest, 3150.00)
+r=build_schedule(l,1)[0]
+# 14 days at 10% (6/1-6/14) then 16 at 11% (6/15-6/30), not 15 and 15.
+check("interest", r.accrued_interest, 3160.00)
+check("new rate starts on the entry date",
+      min(s.start for s in r.segments if round(s.rate,6)==0.11), date(2026,6,15))
 
 print("\n[9] projection capitalizes prior accrual when reserve allows")
 l=base(interest_reserve=10000.0)
